@@ -34,6 +34,7 @@ def iso8601(value: datetime) -> str:
 def build_order_created_event(
     order_id: uuid.UUID,
     items: list[dict[str, Any]],
+    total_cents: int,
     created_at: datetime,
 ) -> dict[str, Any]:
     return {
@@ -49,6 +50,8 @@ def build_order_created_event(
                 {"product_id": item["product_id"], "quantity": item["quantity"]}
                 for item in items
             ],
+            # Tarea B: el JSON Schema exige data.total_cents.
+            "total_cents": total_cents,
         },
     }
 
