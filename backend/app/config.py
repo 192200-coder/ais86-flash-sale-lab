@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=10, ge=1, le=100)
     db_max_overflow: int = Field(default=20, ge=0, le=200)
 
+    # Semana 11: microservicio de facturación (Supabase). Vacíos = facturación desactivada.
+    billing_base_url: str = ""
+    billing_token: SecretStr = SecretStr("")
+    billing_timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
+    billing_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
+    billing_max_attempts: int = Field(default=3, ge=1, le=3)
+
     @field_validator("database_url")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
@@ -82,6 +89,14 @@ class Settings(BaseSettings):
 
     def lab_key_value(self) -> str:
         return self.lab_key.get_secret_value()
+
+    def billing_token_value(self) -> str:
+        return self.billing_token.get_secret_value().strip()
+
+    def billing_configured(self) -> bool:
+        url = self.billing_base_url.strip().rstrip("/")
+        local = url.startswith(("http://127.0.0.1", "http://localhost", "http://host.docker.internal"))
+        return bool(self.billing_token_value()) and (url.startswith("https://") or local) and url.endswith("/billing")
 
 
 @lru_cache(maxsize=1)

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .billing import PENDING, OrderBilling
 from .db import CAMPAIGN, utcnow
 from .events import build_order_created_event, iso8601
 from .models import Order, OrderItem, Outbox, Product
@@ -178,6 +179,19 @@ async def _create_or_replay(
             )
         )
 
+        await session.flush()
+        # Semana 11: tarea de facturación local, en la misma transacción que el pedido
+        # (después del flush para respetar la clave foránea). No se llama al microservicio
+        # aquí: la llamada remota la hace el worker, fuera de la transacción de stock.
+        session.add(
+            OrderBilling(
+                order_id=order_id,
+                dataset_id=dataset_id,
+                status=PENDING,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
         await session.flush()
         return snapshot
 

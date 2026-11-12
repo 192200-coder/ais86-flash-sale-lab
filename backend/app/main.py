@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
+from .billing import router as billing_router
 from .config import get_settings
 from .db import Database
 from .events import create_redis
@@ -59,6 +60,7 @@ app = FastAPI(
 
 app.add_middleware(HardeningMiddleware, settings=settings)
 app.include_router(orders_router)
+app.include_router(billing_router)
 app.include_router(lab_router)
 
 

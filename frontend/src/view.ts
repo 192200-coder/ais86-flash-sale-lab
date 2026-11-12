@@ -9,7 +9,7 @@ import {
 import { el, icon } from './dom';
 import { formatDateTime, formatMoney } from './format';
 import { productImage } from './shell';
-import type { CartLine, Catalog, NotificationStatus, Order, Product } from './types';
+import type { Billing, CartLine, Catalog, NotificationStatus, Order, Product } from './types';
 
 export type CatalogState = 'loading' | 'ready' | 'error';
 export type PollState = 'idle' | 'polling' | 'timeout' | 'error';
@@ -578,6 +578,7 @@ export function receiptPanelNodes(
     banner,
     idBlock,
     notification,
+    billingNode(null),
     el('h3', { class: 'section-label' }, 'Productos'),
     items,
     total,
@@ -634,6 +635,21 @@ export function notificationNode(
   }
 
   return wrapper;
+}
+
+/** Semana 11: línea del comprobante interno (no es un cobro ni un comprobante SUNAT). */
+export function billingNode(billing: Billing | null, unavailable = false): HTMLElement {
+  let text = 'Comprobante: consultando…';
+  if (unavailable) {
+    text = 'Comprobante: no se pudo consultar ahora. El pedido sigue confirmado.';
+  } else if (billing?.status === 'issued' && billing.invoice_number) {
+    text = `Comprobante interno: ${billing.invoice_number}`;
+  } else if (billing?.status === 'pending') {
+    text = 'Comprobante: facturación pendiente.';
+  } else if (billing?.status === 'failed') {
+    text = 'Comprobante: facturación pendiente de reintento. El pedido sigue confirmado.';
+  }
+  return el('p', { class: 'receipt-note', role: 'status', 'aria-live': 'polite', 'data-receipt-billing': '' }, text);
 }
 
 function notificationInfo(status: NotificationStatus): {

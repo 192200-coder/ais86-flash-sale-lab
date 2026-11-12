@@ -38,6 +38,14 @@ export interface Order {
   created_at: string;
 }
 
+export type BillingStatus = 'pending' | 'issued' | 'failed';
+
+/** Semana 11: estado local de facturación, independiente de la notificación. */
+export interface Billing {
+  status: BillingStatus;
+  invoice_number: string | null;
+}
+
 export interface CartLine {
   productId: string;
   quantity: number;

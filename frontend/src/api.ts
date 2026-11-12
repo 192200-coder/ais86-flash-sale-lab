@@ -1,4 +1,5 @@
 import type {
+  Billing,
   Catalog,
   Campaign,
   NotificationStatus,
@@ -286,6 +287,17 @@ export async function createOrder(
 export async function fetchOrder(id: string, signal?: AbortSignal): Promise<Order> {
   const response = await request(`/api/v1/orders/${encodeURIComponent(id)}`, { signal });
   return parseOrder(response.payload);
+}
+
+export async function fetchBilling(id: string, signal?: AbortSignal): Promise<Billing> {
+  const response = await request(`/api/v1/orders/${encodeURIComponent(id)}/billing`, { signal });
+  const payload = response.payload;
+  const status = isRecord(payload) ? payload.status : null;
+  if (status !== 'pending' && status !== 'issued' && status !== 'failed') {
+    throw new ApiError('INVALID_RESPONSE', response.status, 'Respuesta de facturación no válida');
+  }
+  const number = isRecord(payload) && typeof payload.invoice_number === 'string' ? payload.invoice_number : null;
+  return { status, invoice_number: number };
 }
 
 export function friendlyError(error: unknown, context: 'catalog' | 'create' | 'order'): FriendlyError {

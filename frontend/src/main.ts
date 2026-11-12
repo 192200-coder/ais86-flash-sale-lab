@@ -1,6 +1,6 @@
 import '@fontsource-variable/manrope';
 import './styles.css';
-import { ApiError, createOrder, fetchCatalog, fetchOrder, friendlyError, isAbortError } from './api';
+import { ApiError, createOrder, fetchBilling, fetchCatalog, fetchOrder, friendlyError, isAbortError } from './api';
 import {
   MAX_DISTINCT_PRODUCTS,
   addLine,
@@ -33,6 +33,7 @@ import {
   configureAddButton,
   emptyCatalogNode,
   notificationNode,
+  billingNode,
   receiptPanelNodes,
   renderProductCard,
   skeletonCards,
@@ -71,6 +72,8 @@ let pollAbort: AbortController | null = null;
 let pollTimer: number | null = null;
 let pollToken = 0;
 let pollAttempts = 0;
+let billingToken = 0;
+let billingTimer: number | null = null;
 let lastFocused: HTMLElement | null = null;
 let toastTimer: number | null = null;
 
@@ -892,6 +895,38 @@ function beginReceipt(order: Order): void {
   if (order.notification_status === 'pending') {
     startPolling();
   }
+  startBillingPoll(order.id);
+}
+
+/** Semana 11: consulta el comprobante aparte; su estado no afecta al pedido ni a la notificación. */
+function startBillingPoll(orderId: string): void {
+  const token = ++billingToken;
+  if (billingTimer !== null) {
+    window.clearTimeout(billingTimer);
+  }
+  let attempts = 0;
+  const render = (node: HTMLElement): void => {
+    if (token !== billingToken || panelMode !== 'receipt' || activeOrder?.id !== orderId) {
+      return;
+    }
+    ui.panelBody.querySelector('[data-receipt-billing]')?.replaceWith(node);
+  };
+  const tick = async (): Promise<void> => {
+    if (token !== billingToken) {
+      return;
+    }
+    attempts += 1;
+    try {
+      const billing = await fetchBilling(orderId);
+      render(billingNode(billing));
+      if (billing.status === 'pending' && attempts < maxPollAttempts) {
+        billingTimer = window.setTimeout(() => void tick(), pollIntervalMs);
+      }
+    } catch {
+      render(billingNode(null, true));
+    }
+  };
+  billingTimer = window.setTimeout(() => void tick(), 500);
 }
 
 function startPolling(): void {

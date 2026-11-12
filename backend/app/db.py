@@ -135,7 +135,7 @@ class Database:
         raise RuntimeError("database unavailable") from last_error
 
     async def create_schema(self) -> None:
-        from . import models
+        from . import billing, models  # noqa: F401  (registra las tablas)
 
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)

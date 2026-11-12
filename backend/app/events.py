@@ -391,7 +391,10 @@ async def delete_dataset_rows(session: AsyncSession, dataset_ids: list[str]) -> 
     safe_ids = [dataset_id for dataset_id in dataset_ids if dataset_id != PUBLIC_DATASET]
     if not safe_ids:
         return
+    from .billing import OrderBilling
+
     order_ids = select(Order.id).where(Order.dataset_id.in_(safe_ids))
+    await session.execute(delete(OrderBilling).where(OrderBilling.dataset_id.in_(safe_ids)))
     await session.execute(delete(Notification).where(Notification.dataset_id.in_(safe_ids)))
     await session.execute(delete(EventRecord).where(EventRecord.dataset_id.in_(safe_ids)))
     await session.execute(delete(Outbox).where(Outbox.dataset_id.in_(safe_ids)))
