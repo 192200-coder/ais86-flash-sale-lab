@@ -17,7 +17,6 @@ import type {
   Customer,
   NotificationStatus,
   Order,
-  OrderSummary,
   Product,
   Session
 } from './types';
@@ -691,7 +690,18 @@ export function notificationNode(
 }
 
 /** Semana 11: línea del comprobante interno (no es un cobro ni un comprobante SUNAT). */
-export function billingNode(billing: Billing | null, unavailable = false): HTMLElement {
+export function billingNode(billing: Billing | null, unavailable = false, invoiceOrderId: string | null = null): HTMLElement {
+  // Semana 12: con la factura emitida, el titular puede abrirla completa (#factura/<pedido>).
+  if (!unavailable && billing?.status === 'issued' && billing.invoice_number && invoiceOrderId) {
+    const link = el('a', { class: 'button button-primary button-small', href: `#factura/${invoiceOrderId}`, 'data-action': 'goto-page' });
+    link.append(icon('copy'), el('span', {}, 'Ver factura'));
+    return el(
+      'div',
+      { class: 'receipt-note receipt-invoice', role: 'status', 'aria-live': 'polite', 'data-receipt-billing': '' },
+      el('span', {}, `Comprobante interno: ${billing.invoice_number}`),
+      link
+    );
+  }
   let text = 'Comprobante: consultando…';
   if (unavailable) {
     text = 'Comprobante: no se pudo consultar ahora. El pedido sigue confirmado.';
@@ -901,13 +911,8 @@ export function authPanelNodes(context: AuthPanelContext): Node[] {
   return nodes;
 }
 
-export type ListState = 'loading' | 'ready' | 'error';
-
 export interface AccountPanelContext {
   session: Session;
-  state: ListState;
-  orders: readonly OrderSummary[];
-  error: string;
 }
 
 function roleChip(role: 'admin' | 'cliente'): HTMLElement {
@@ -919,37 +924,13 @@ function roleChip(role: 'admin' | 'cliente'): HTMLElement {
   return chip;
 }
 
-function billingLabel(summary: OrderSummary): string {
-  const billing = summary.billing;
-  if (!billing) {
-    return 'Sin facturación';
-  }
-  if (billing.status === 'issued' && billing.invoice_number) {
-    return billing.invoice_number;
-  }
-  if (billing.status === 'failed') {
-    return `Facturación fallida${billing.error ? ` (${billing.error})` : ''}`;
-  }
-  return 'Facturación pendiente';
+function pageLink(href: string, label: string, iconName: IconName, className: string): HTMLAnchorElement {
+  const link = el('a', { class: className, href, 'data-action': 'goto-page' });
+  link.append(icon(iconName), el('span', {}, label));
+  return link;
 }
 
-function itemsLabel(summary: OrderSummary): string {
-  return summary.items.map((item) => `${item.quantity} × ${item.name}`).join(', ');
-}
-
-function listStatusNode(state: ListState, error: string, empty: string, count: number): HTMLElement | null {
-  if (state === 'loading') {
-    return el('p', { class: 'notice-meta', role: 'status' }, el('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Cargando pedidos…');
-  }
-  if (state === 'error') {
-    return el('div', { class: 'alert alert-error', role: 'alert' }, icon('alert'), el('div', { class: 'alert-body' }, el('p', {}, error)));
-  }
-  if (count === 0) {
-    return el('p', { class: 'panel-intro' }, empty);
-  }
-  return null;
-}
-
+/** Perfil + accesos. Las compras y la administración viven en páginas completas (pages.ts). */
 export function accountPanelNodes(context: AccountPanelContext): Node[] {
   const { user } = context.session;
   const profile = el(
@@ -964,88 +945,18 @@ export function accountPanelNodes(context: AccountPanelContext): Node[] {
       roleChip(user.role)
     )
   );
-  const actions = el('div', { class: 'receipt-actions' });
+  const actions = el(
+    'div',
+    { class: 'receipt-actions' },
+    pageLink('#mis-compras', 'Mis compras y facturas', 'cart', 'button button-primary')
+  );
   if (user.role === 'admin') {
-    actions.append(actionButton('open-admin', 'Panel de administración', 'shield', 'button button-primary'));
+    actions.append(pageLink('#admin', 'Administración de la tienda', 'shield', 'button button-secondary'));
   }
   actions.append(actionButton('logout', 'Cerrar sesión', 'logout'));
-
-  const list = el('ul', { class: 'order-list' });
-  for (const order of context.orders) {
-    list.append(
-      el(
-        'li',
-        { class: 'order-row' },
-        el(
-          'div',
-          { class: 'order-row-main' },
-          el('p', { class: 'order-row-title' }, formatDateTime(order.created_at)),
-          el('p', { class: 'order-row-meta' }, itemsLabel(order)),
-          el('p', { class: 'order-row-meta' }, billingLabel(order))
-        ),
-        el(
-          'div',
-          { class: 'order-row-side' },
-          el('strong', {}, formatMoney(order.total_cents)),
-          el('button', { type: 'button', class: 'button button-secondary button-small', 'data-action': 'view-order', 'data-order-id': order.id }, 'Ver recibo')
-        )
-      )
-    );
-  }
-  const status = listStatusNode(context.state, context.error, 'Todavía no tienes pedidos. ¡Explora el drop!', context.orders.length);
   return [
     profile,
-    actions,
-    el('h3', { class: 'section-label' }, 'Mis pedidos'),
-    status ?? list
-  ];
-}
-
-export interface AdminPanelContext {
-  state: ListState;
-  orders: readonly OrderSummary[];
-  error: string;
-  busyOrderId: string | null;
-}
-
-export function adminPanelNodes(context: AdminPanelContext): Node[] {
-  const list = el('ul', { class: 'order-list' });
-  for (const order of context.orders) {
-    const buyer = order.customer
-      ? el('p', { class: 'order-row-title' }, `${order.customer.full_name} · ${order.customer.email}`)
-      : el('p', { class: 'order-row-title order-row-muted' }, 'Sin cuenta (pedido anterior al login)');
-    const side = el('div', { class: 'order-row-side' }, el('strong', {}, formatMoney(order.total_cents)));
-    if (order.billing?.status === 'failed') {
-      const retry = el('button', {
-        type: 'button',
-        class: 'button button-secondary button-small',
-        'data-action': 'retry-billing',
-        'data-order-id': order.id
-      });
-      retry.disabled = context.busyOrderId !== null;
-      retry.append(icon('refresh'), el('span', {}, context.busyOrderId === order.id ? 'Reintentando…' : 'Reintentar facturación'));
-      side.append(retry);
-    }
-    const billingClass = order.billing?.status === 'failed' ? 'order-row-meta is-failed' : 'order-row-meta';
-    list.append(
-      el(
-        'li',
-        { class: 'order-row' },
-        el(
-          'div',
-          { class: 'order-row-main' },
-          buyer,
-          el('p', { class: 'order-row-meta' }, `${formatDateTime(order.created_at)} · ${itemsLabel(order)}`),
-          el('p', { class: billingClass }, `${billingLabel(order)} · notificación ${order.notification_status}`)
-        ),
-        side
-      )
-    );
-  }
-  const status = listStatusNode(context.state, context.error, 'Aún no hay pedidos en la tienda.', context.orders.length);
-  return [
-    el('p', { class: 'panel-intro' }, 'Solo administradores: todos los pedidos de la tienda con su comprador y el estado de facturación.'),
-    el('div', { class: 'receipt-actions' }, actionButton('admin-refresh', 'Actualizar', 'refresh'), actionButton('open-account', 'Volver a mi cuenta', 'user')),
-    status ?? list
+    el('p', { class: 'panel-intro' }, 'Consulta el seguimiento de cada compra y descarga su factura en “Mis compras”.'),
+    actions
   ];
 }

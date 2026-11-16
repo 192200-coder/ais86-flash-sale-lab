@@ -4,17 +4,15 @@ import {
   ApiError,
   authErrorMessage,
   createOrder,
-  fetchAdminOrders,
   fetchBilling,
   fetchCatalog,
   fetchCustomer,
-  fetchMyOrders,
   fetchOrder,
   friendlyError,
   isAbortError,
-  isAuthError,
-  retryBillingRequest
+  isAuthError
 } from './api';
+import { initPages, isPageRoute } from './pages';
 import { currentSession, expireSession, onSessionChange, signIn, signOut, signUp } from './session';
 import {
   MAX_DISTINCT_PRODUCTS,
@@ -41,10 +39,9 @@ import {
   writeStoredCart
 } from './storage';
 import type { AttemptRecord } from './storage';
-import type { CartLine, Catalog, Order, OrderSummary, Product } from './types';
+import type { CartLine, Catalog, Order, Product } from './types';
 import {
   accountPanelNodes,
-  adminPanelNodes,
   applyStockChip,
   authPanelNodes,
   cartPanelNodes,
@@ -59,9 +56,9 @@ import {
   syncProductCard,
   trackPanelNodes
 } from './view';
-import type { AuthTab, CatalogState, ListState, PollState } from './view';
+import type { AuthTab, CatalogState, PollState } from './view';
 
-type PanelMode = 'cart' | 'receipt' | 'track' | 'auth' | 'account' | 'admin';
+type PanelMode = 'cart' | 'receipt' | 'track' | 'auth' | 'account';
 type ToastTone = 'info' | 'warn';
 
 const pollIntervalMs = 2000;
@@ -103,14 +100,6 @@ let authNotice = '';
 let authEmail = '';
 let authFullName = '';
 let afterAuthCart = false;
-let accountState: ListState = 'loading';
-let accountOrders: OrderSummary[] = [];
-let accountError = '';
-let adminState: ListState = 'loading';
-let adminOrders: OrderSummary[] = [];
-let adminError = '';
-let adminBusyId: string | null = null;
-let listToken = 0;
 let customerToken = 0;
 
 const ui: Elements = buildShell();
@@ -133,6 +122,14 @@ function start(): void {
   });
   onSessionChange(onSessionChanged);
   updateAccountButton();
+  initPages(ui, {
+    openAuth: () => {
+      afterAuthCart = false;
+      openPanel('auth');
+    },
+    openReceipt: (orderId) => void openOrderReceipt(orderId),
+    toast: showToast
+  });
   ui.panelClose.addEventListener('click', () => ui.panel.close());
   ui.panel.addEventListener('cancel', onPanelCancel);
   ui.panel.addEventListener('close', onPanelClose);
@@ -613,13 +610,9 @@ function openPanel(mode: PanelMode): void {
   focusPanelStart(panelMode);
 }
 
-/** Semana 12: prepara los paneles de cuenta; sin permiso redirige (la API también lo impide). */
+/** Semana 12: sin sesión, "Mi cuenta" redirige a iniciar sesión. */
 function resolveMode(mode: PanelMode): PanelMode {
-  const session = currentSession();
-  if (mode === 'admin' && session?.user.role !== 'admin') {
-    mode = session ? 'account' : 'auth';
-  }
-  if (mode === 'account' && !session) {
+  if (mode === 'account' && !currentSession()) {
     mode = 'auth';
   }
   if (mode === 'auth') {
@@ -627,15 +620,6 @@ function resolveMode(mode: PanelMode): PanelMode {
     authError = '';
   } else {
     authNotice = '';
-  }
-  if (mode === 'account') {
-    accountState = 'loading';
-    void loadAccountOrders();
-  }
-  if (mode === 'admin') {
-    adminState = 'loading';
-    adminBusyId = null;
-    void loadAdminOrders();
   }
   return mode;
 }
@@ -796,24 +780,10 @@ function onPanelBodyClick(event: MouseEvent): void {
     case 'logout':
       void logout();
       break;
-    case 'open-account':
-      setPanelMode('account');
-      break;
-    case 'open-admin':
-      setPanelMode('admin');
-      break;
-    case 'admin-refresh':
-      setPanelMode('admin');
-      break;
-    case 'retry-billing':
-      if (button.dataset.orderId) {
-        void retryBilling(button.dataset.orderId);
-      }
-      break;
-    case 'view-order':
-      if (button.dataset.orderId) {
-        void openOrderReceipt(button.dataset.orderId);
-      }
+    case 'goto-page':
+      // Enlace a una página (#mis-compras, #admin, #factura/...): se cierra el diálogo y
+      // el navegador sigue el enlace (no se cancela el clic).
+      ui.panel.close();
       break;
     case 'browse':
       ui.panel.close();
@@ -836,16 +806,14 @@ function renderPanel(resetScroll: boolean): void {
     receipt: 'Pedido confirmado',
     track: 'Seguimiento',
     auth: authTab === 'login' ? 'Iniciar sesión' : 'Crear cuenta',
-    account: 'Mi cuenta',
-    admin: 'Panel de administración'
+    account: 'Mi cuenta'
   };
   const closeLabels: Record<PanelMode, string> = {
     cart: 'Cerrar carrito',
     receipt: 'Cerrar recibo',
     track: 'Cerrar seguimiento',
     auth: 'Cerrar inicio de sesión',
-    account: 'Cerrar mi cuenta',
-    admin: 'Cerrar panel de administración'
+    account: 'Cerrar mi cuenta'
   };
   ui.panelTitle.textContent = titles[panelMode];
   ui.panelClose.setAttribute('aria-label', closeLabels[panelMode]);
@@ -887,11 +855,7 @@ function renderPanelBody(resetScroll: boolean): void {
     });
   } else if (panelMode === 'account') {
     const session = currentSession();
-    nodes = session
-      ? accountPanelNodes({ session, state: accountState, orders: accountOrders, error: accountError })
-      : [];
-  } else if (panelMode === 'admin') {
-    nodes = adminPanelNodes({ state: adminState, orders: adminOrders, error: adminError, busyOrderId: adminBusyId });
+    nodes = session ? accountPanelNodes({ session }) : [];
   } else {
     nodes = trackPanelNodes(trackingValue, trackingError, trackingBusy);
   }
@@ -1090,88 +1054,19 @@ async function loadReceiptCustomer(orderId: string): Promise<void> {
   }
 }
 
-async function loadAccountOrders(): Promise<void> {
-  const token = ++listToken;
-  try {
-    const orders = await fetchMyOrders();
-    if (token !== listToken) {
-      return;
-    }
-    accountOrders = orders;
-    accountState = 'ready';
-  } catch (error) {
-    if (token !== listToken) {
-      return;
-    }
-    if (isAuthError(error)) {
-      expireSession();
-      return;
-    }
-    accountState = 'error';
-    accountError = 'No pudimos cargar tus pedidos. Inténtalo de nuevo.';
-  }
-  if (ui.panel.open && panelMode === 'account') {
-    renderPanelBody(false);
-  }
-}
-
-async function loadAdminOrders(): Promise<void> {
-  const token = ++listToken;
-  try {
-    const orders = await fetchAdminOrders();
-    if (token !== listToken) {
-      return;
-    }
-    adminOrders = orders;
-    adminState = 'ready';
-  } catch (error) {
-    if (token !== listToken) {
-      return;
-    }
-    if (isAuthError(error)) {
-      expireSession();
-      return;
-    }
-    adminState = 'error';
-    adminError =
-      error instanceof ApiError && error.code === 'FORBIDDEN'
-        ? 'Tu cuenta no tiene rol de administrador.'
-        : 'No pudimos cargar los pedidos. Inténtalo de nuevo.';
-  }
-  if (ui.panel.open && panelMode === 'admin') {
-    renderPanelBody(false);
-  }
-}
-
-async function retryBilling(orderId: string): Promise<void> {
-  if (adminBusyId) {
-    return;
-  }
-  adminBusyId = orderId;
-  renderPanelBody(false);
-  try {
-    await retryBillingRequest(orderId);
-    showToast('Facturación reenviada: el worker la emitirá con la misma clave (sin duplicar).');
-  } catch (error) {
-    if (isAuthError(error)) {
-      adminBusyId = null;
-      expireSession();
-      return;
-    }
-    showToast('No se pudo reintentar la facturación.', 'warn');
-  }
-  adminBusyId = null;
-  window.setTimeout(() => {
-    if (ui.panel.open && panelMode === 'admin') {
-      void loadAdminOrders();
-    }
-  }, 3000);
-  void loadAdminOrders();
-}
-
+/** Semana 12: abre el recibo de un pedido (desde "Mis compras"), con el diálogo si estaba cerrado. */
 async function openOrderReceipt(orderId: string): Promise<void> {
   try {
-    beginReceipt(await fetchOrder(orderId));
+    const order = await fetchOrder(orderId);
+    if (!ui.panel.open) {
+      lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      panelMode = 'receipt';
+      activeOrder = order;
+      renderPanel(true);
+      ui.panel.showModal();
+      document.documentElement.classList.add('has-dialog');
+    }
+    beginReceipt(order);
   } catch (error) {
     showToast(friendlyError(error, 'order').message, 'warn');
   }
@@ -1210,7 +1105,14 @@ async function submitAuth(form: HTMLFormElement): Promise<void> {
     }
     authFullName = '';
     showToast(`Hola, ${session.user.full_name}.`);
-    setPanelMode(afterAuthCart ? 'cart' : 'account');
+    if (afterAuthCart) {
+      setPanelMode('cart');
+    } else if (isPageRoute()) {
+      // Se inició sesión desde una página (#mis-compras, #factura/...): la página se recarga sola.
+      ui.panel.close();
+    } else {
+      setPanelMode('account');
+    }
     afterAuthCart = false;
   } catch (error) {
     authBusy = false;
@@ -1239,7 +1141,7 @@ function onSessionChanged(): void {
   if (!ui.panel.open) {
     return;
   }
-  if (!currentSession() && (panelMode === 'account' || panelMode === 'admin')) {
+  if (!currentSession() && panelMode === 'account') {
     setPanelMode('auth');
     return;
   }
@@ -1281,7 +1183,7 @@ function startBillingPoll(orderId: string): void {
     attempts += 1;
     try {
       const billing = await fetchBilling(orderId);
-      render(billingNode(billing));
+      render(billingNode(billing, false, currentSession() ? orderId : null));
       if (billing.status === 'pending' && attempts < maxPollAttempts) {
         billingTimer = window.setTimeout(() => void tick(), pollIntervalMs);
       }

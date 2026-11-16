@@ -1,16 +1,20 @@
 import type {
+  AdminSummary,
   AuthUser,
   Billing,
   BillingStatus,
   Catalog,
   Campaign,
   Customer,
+  Invoice,
   NotificationStatus,
   Order,
   OrderLine,
   OrderSummary,
   Product,
-  Session
+  PurchasePage,
+  Session,
+  TimelineStep
 } from './types';
 
 const defaultTimeoutMs = 12000;
@@ -385,15 +389,46 @@ function parseSummary(value: unknown): OrderSummary {
       quantity: isInteger(item.quantity) ? item.quantity : 1
     })),
     customer: parseCustomer(value.customer),
-    billing
+    billing,
+    timeline: Array.isArray(value.timeline) ? value.timeline.filter(isRecord).map(parseStep) : []
   };
 }
 
-function parseSummaries(value: unknown): OrderSummary[] {
+function parseStep(value: Record<string, unknown>): TimelineStep {
+  const step = value.step === 'notification' || value.step === 'invoice' ? value.step : 'confirmed';
+  const state =
+    value.state === 'done' || value.state === 'failed' || value.state === 'none' ? value.state : 'pending';
+  return {
+    step,
+    state,
+    at: typeof value.at === 'string' ? value.at : null,
+    detail: typeof value.detail === 'string' ? value.detail : null
+  };
+}
+
+function parsePage(value: unknown): PurchasePage {
   if (!isRecord(value) || !Array.isArray(value.items)) {
     throw invalidResponse();
   }
-  return value.items.map(parseSummary);
+  return {
+    items: value.items.map(parseSummary),
+    total: readInteger(value, 'total', 0),
+    limit: readInteger(value, 'limit', 1),
+    offset: readInteger(value, 'offset', 0)
+  };
+}
+
+export type BillingFilter = BillingStatus | 'all';
+
+function pageQuery(params: Record<string, string | number | null | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== '' && value !== 'all') {
+      query.set(key, String(value));
+    }
+  }
+  const text = query.toString();
+  return text ? `?${text}` : '';
 }
 
 export async function loginRequest(email: string, password: string): Promise<Session> {
@@ -425,14 +460,84 @@ export async function logoutRequest(accessToken: string): Promise<void> {
   await request('/api/v1/auth/logout', { method: 'POST', bearer: accessToken, allowEmpty: true });
 }
 
-export async function fetchMyOrders(signal?: AbortSignal): Promise<OrderSummary[]> {
-  const response = await request('/api/v1/me/orders', { signal, auth: true });
-  return parseSummaries(response.payload);
+export async function fetchMyOrders(
+  filter: BillingFilter,
+  offset: number,
+  limit: number,
+  signal?: AbortSignal
+): Promise<PurchasePage> {
+  const response = await request(`/api/v1/me/orders${pageQuery({ billing: filter, offset, limit })}`, {
+    signal,
+    auth: true
+  });
+  return parsePage(response.payload);
 }
 
-export async function fetchAdminOrders(signal?: AbortSignal): Promise<OrderSummary[]> {
-  const response = await request('/api/v1/admin/orders', { signal, auth: true });
-  return parseSummaries(response.payload);
+export async function fetchAdminOrders(
+  filter: BillingFilter,
+  search: string,
+  offset: number,
+  limit: number,
+  signal?: AbortSignal
+): Promise<PurchasePage> {
+  const response = await request(
+    `/api/v1/admin/orders${pageQuery({ billing: filter, q: search.trim().slice(0, 80), offset, limit })}`,
+    { signal, auth: true }
+  );
+  return parsePage(response.payload);
+}
+
+export async function fetchAdminSummary(signal?: AbortSignal): Promise<AdminSummary> {
+  const response = await request('/api/v1/admin/summary', { signal, auth: true });
+  const value = response.payload;
+  if (!isRecord(value) || !isRecord(value.invoices)) {
+    throw invalidResponse();
+  }
+  return {
+    orders: readInteger(value, 'orders', 0),
+    sales_cents: readInteger(value, 'sales_cents', 0),
+    invoices: {
+      issued: readInteger(value.invoices, 'issued', 0),
+      pending: readInteger(value.invoices, 'pending', 0),
+      failed: readInteger(value.invoices, 'failed', 0)
+    },
+    customers: readInteger(value, 'customers', 0),
+    orders_without_account: readInteger(value, 'orders_without_account', 0)
+  };
+}
+
+export async function fetchInvoice(orderId: string, signal?: AbortSignal): Promise<Invoice> {
+  const response = await request(`/api/v1/orders/${encodeURIComponent(orderId)}/invoice`, { signal, auth: true });
+  const value = response.payload;
+  if (!isRecord(value) || !isRecord(value.issuer) || !isRecord(value.order) || !isRecord(value.totals) || !Array.isArray(value.items)) {
+    throw invalidResponse();
+  }
+  const rate = value.totals.igv_rate;
+  return {
+    invoice_id: readString(value, 'invoice_id'),
+    invoice_number: readString(value, 'invoice_number'),
+    issued_at: readString(value, 'issued_at'),
+    verified: value.verified === true,
+    issuer: {
+      name: readString(value.issuer, 'name'),
+      client_id: typeof value.issuer.client_id === 'string' ? value.issuer.client_id : null
+    },
+    customer: parseCustomer(value.customer),
+    order: { id: readString(value.order, 'id'), created_at: readString(value.order, 'created_at') },
+    items: value.items.filter(isRecord).map((item) => ({
+      name: typeof item.name === 'string' ? item.name : 'Producto',
+      quantity: isInteger(item.quantity) ? item.quantity : 0,
+      unit_price_cents: isInteger(item.unit_price_cents) ? item.unit_price_cents : 0,
+      line_total_cents: isInteger(item.line_total_cents) ? item.line_total_cents : 0
+    })),
+    totals: {
+      taxable_cents: readInteger(value.totals, 'taxable_cents', 0),
+      igv_cents: readInteger(value.totals, 'igv_cents', 0),
+      igv_rate: typeof rate === 'number' ? rate : 0.18,
+      total_cents: readInteger(value.totals, 'total_cents', 0)
+    },
+    note: typeof value.note === 'string' ? value.note : ''
+  };
 }
 
 export async function retryBillingRequest(orderId: string): Promise<void> {

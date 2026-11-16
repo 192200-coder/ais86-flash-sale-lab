@@ -90,6 +90,28 @@ def _error_code(response: httpx.Response) -> str:
     return f"HTTP_{response.status_code}"
 
 
+async def fetch_invoice(settings: Settings, invoice_id: uuid.UUID) -> dict[str, Any] | None:
+    """Semana 12: consulta la factura oficial en el microservicio (GET /invoices/{id}).
+
+    Devuelve None si el microservicio no está configurado, no responde o no la encuentra;
+    quien llama decide cómo mostrarlo. Nunca lanza por errores de red.
+    """
+    if not settings.billing_configured():
+        return None
+    url = f"{settings.billing_base_url.strip().rstrip('/')}/invoices/{invoice_id}"
+    try:
+        async with httpx.AsyncClient(timeout=min(settings.billing_timeout_seconds, 8.0), trust_env=True) as client:
+            response = await client.get(url, headers={"X-Billing-Token": settings.billing_token_value()})
+        if response.status_code != 200:
+            logger.warning("invoice lookup status=%s", response.status_code)
+            return None
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("invoice lookup failed type=%s", type(exc).__name__)
+        return None
+    return data if isinstance(data, dict) else None
+
+
 async def send_invoice(client: httpx.AsyncClient, settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     try:
         response = await client.post(

@@ -19,6 +19,10 @@ export interface Elements {
   trackButton: HTMLButtonElement;
   accountButton: HTMLButtonElement;
   accountLabel: HTMLElement;
+  purchasesLink: HTMLAnchorElement;
+  adminLink: HTMLAnchorElement;
+  storeView: HTMLElement;
+  pageView: HTMLElement;
   panel: HTMLDialogElement;
   panelTitle: HTMLElement;
   panelClose: HTMLButtonElement;
@@ -71,6 +75,10 @@ export function buildShell(): Elements {
     'aria-haspopup': 'dialog'
   });
   accountButton.append(icon('user'), accountLabel);
+  // Semana 12: páginas de compras (visibles solo con sesión) y administración (solo admin).
+  const purchasesLink = el('a', { class: 'nav-link', href: '#mis-compras', hidden: true }, 'Mis compras');
+  const adminLink = el('a', { class: 'nav-link nav-link-admin', href: '#admin', hidden: true });
+  adminLink.append(icon('shield'), el('span', {}, 'Administración'));
 
   const header = el(
     'header',
@@ -89,6 +97,8 @@ export function buildShell(): Elements {
         { class: 'primary-nav', 'aria-label': 'Principal' },
         el('a', { class: 'nav-link', href: '#catalogo' }, 'Tienda'),
         trackButton,
+        purchasesLink,
+        adminLink,
         accountButton,
         cartButton
       )
@@ -268,7 +278,9 @@ export function buildShell(): Elements {
     hidden: true
   });
 
-  const main = el('main', {}, hero, catalogSection);
+  const storeView = el('div', { class: 'store-view' }, hero, catalogSection);
+  const pageView = el('div', { class: 'page-view', hidden: true });
+  const main = el('main', {}, storeView, pageView);
   app.replaceChildren(demoBar, header, main, footer, panel, toast);
 
   return {
@@ -290,6 +302,10 @@ export function buildShell(): Elements {
     trackButton,
     accountButton,
     accountLabel,
+    purchasesLink,
+    adminLink,
+    storeView,
+    pageView,
     panel,
     panelTitle,
     panelClose,

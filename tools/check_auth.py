@@ -1,4 +1,4 @@
-"""Comprueba el login con Supabase Auth, los roles y el comprador del pedido (Semana 12).
+"""Comprueba login (Supabase Auth), roles, comprador, factura y seguimiento (Semana 12).
 
 Uso (PowerShell, desde la carpeta del S09; las credenciales se cargan sin mostrarlas):
     $env:DEMO_USERS = ((Get-Content ..\\usuarios-demo.txt | Where-Object { $_ -notmatch '^#' }) -join ';')
@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import uuid
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -138,6 +139,42 @@ try:
     status, body = request("POST", "/api/v1/orders", ORDER, token=tB, run=run, idem=idem)
     check(status == 409 and code(body) == "IDEMPOTENCY_CONFLICT",
           "B reutiliza la Idempotency-Key de A -> 409 (no recibe el pedido de A)")
+
+    # 4. Factura con los datos de la compra y seguimiento.
+    billing = {}
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        status, billing = request("GET", f"/api/v1/orders/{order_id}/billing", run=run)
+        if status == 200 and billing.get("status") != "pending":
+            break
+        time.sleep(1.0)
+    status, inv = request("GET", f"/api/v1/orders/{order_id}/invoice", token=tA, run=run)
+    totals = inv.get("totals") or {}
+    lines_total = sum(item.get("line_total_cents", 0) for item in inv.get("items", []))
+    check(status == 200 and inv.get("verified") is True and inv.get("invoice_number") == billing.get("invoice_number"),
+          f"Factura verificada con el microservicio: {inv.get('invoice_number')}")
+    check((inv.get("customer") or {}).get("email") == emailA and lines_total == totals.get("total_cents") == order.get("total_cents"),
+          "Factura con comprador, productos e importe total del pedido")
+    check(totals.get("taxable_cents", 0) + totals.get("igv_cents", 0) == totals.get("total_cents") and totals.get("igv_rate") == 0.18,
+          f"Desglose IGV 18%: gravada {totals.get('taxable_cents')} + IGV {totals.get('igv_cents')} = {totals.get('total_cents')} céntimos")
+    status, _ = request("GET", f"/api/v1/orders/{order_id}/invoice", token=tB, run=run)
+    status_admin, _ = request("GET", f"/api/v1/orders/{order_id}/invoice", token=tAdmin, run=run)
+    check(status == 404 and status_admin == 200, "Factura: otro cliente -> 404, admin -> 200")
+
+    status, mine = request("GET", "/api/v1/me/orders?billing=issued", token=tA, run=run)
+    row = next((item for item in mine.get("items", []) if item["id"] == order_id), None)
+    steps = {step["step"]: step["state"] for step in (row or {}).get("timeline", [])}
+    check(status == 200 and steps.get("confirmed") == "done" and steps.get("invoice") == "done",
+          f"Seguimiento en 'Mis compras' (filtro facturadas): {steps}")
+
+    status, body = request("GET", "/api/v1/admin/summary", token=tA, run=run)
+    status_admin, summary = request("GET", "/api/v1/admin/summary", token=tAdmin, run=run)
+    check(status == 403 and status_admin == 200 and summary.get("orders", 0) >= 2 and summary.get("customers", 0) >= 1,
+          f"Resumen admin (cliente -> 403): {summary.get('orders')} compras, {summary.get('customers')} cliente(s)")
+    status, found = request("GET", "/api/v1/admin/orders?q=" + emailA.split("@")[0], token=tAdmin, run=run)
+    emails = {(item.get("customer") or {}).get("email") for item in found.get("items", [])}
+    check(status == 200 and order_id in [item["id"] for item in found.get("items", [])] and emails == {emailA},
+          "Admin busca compras por cliente")
 finally:
     request("DELETE", "/_lab/runs/" + run, lab=True)
 

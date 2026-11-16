@@ -47,6 +47,41 @@ Al terminar:
 docker compose stop tunnel
 ```
 
+## Semana 12: cuentas, compras y facturas
+
+Login con **Supabase Auth**. El navegador solo habla con esta API, que hace de intermediaria hacia Supabase (patrón *Backend for Frontend*; la CSP `connect-src 'self'` se mantiene). Cada JWT se verifica en la API con la clave pública del proyecto (JWKS, ES256); el rol sale de `app_metadata.role`, que el usuario no puede modificar.
+
+| Rol | Permisos |
+| --- | --- |
+| Sin sesión | Ver catálogo y consultar un pedido por su ID. **No puede comprar** en la tienda (401 `AUTH_REQUIRED`). |
+| `cliente` | Comprar; **Mis compras** (`#mis-compras`) con el seguimiento de cada pedido y su **factura** (`#factura/<pedido>`), imprimible o guardable en PDF. Quien se registra en la tienda es siempre cliente. |
+| `admin` | Además, **Administración** (`#admin`): resumen de ventas, todas las compras con su comprador, búsqueda por cliente, filtros por estado de factura y reintento de facturaciones fallidas. |
+
+- **Comprador:** se guarda en `order_customers`, en la misma transacción que el pedido. El JSON público del pedido, el evento y la llamada al microservicio de facturación no cambian.
+- **Factura:** S09 la compone con la factura oficial del microservicio (consultada en vivo: número, fecha de emisión, líneas, total) más el comprador, con desglose de IGV 18 % incluido en el precio. Es un comprobante interno de demostración, no válido ante SUNAT.
+- **Seguimiento:** pedido confirmado → notificación enviada → factura emitida, cada paso con su fecha.
+- **Pruebas del docente:** los datasets de laboratorio (`X-Lab-Key` + `X-Lab-Run`) conservan el contrato de S09 sin iniciar sesión.
+
+Configuración en `.env` (valores del proyecto Supabase; la clave *publishable* es pública por diseño, la *secret* nunca va aquí):
+
+```sh
+SUPABASE_URL=https://TU_PROYECTO.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+```
+
+Dar rol de administrador a un usuario (SQL Editor de Supabase; el usuario debe cerrar e iniciar sesión para que su JWT lo incluya):
+
+```sql
+update auth.users set raw_app_meta_data = raw_app_meta_data || '{"role":"admin"}' where email = 'correo@ejemplo.com';
+```
+
+Comprobar (un admin y dos clientes de prueba, formato `correo | contraseña | rol` separados por `;`):
+
+```powershell
+$env:DEMO_USERS = "admin@... | ... | admin;ana@... | ... | cliente;bruno@... | ... | cliente"
+docker compose exec -e DEMO_USERS api python /app/tools/check_auth.py --target http://127.0.0.1:8000
+```
+
 ## Trabajar y detener
 
 Modifica el backend sin cambiar las interfaces publicadas ni quitar seguridad. Para aplicar cambios: `docker compose up --build -d --wait`. Ver errores: `docker compose logs --tail 80 api worker`. Detener: `docker compose down` (no borra volúmenes).
