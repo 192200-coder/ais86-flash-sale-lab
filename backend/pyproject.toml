@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings==2.16.2",
     "pytest==9.2.0",
     "httpx==0.28.1",
+    "PyJWT[crypto]==2.10.1",
 ]
 
 [tool.setuptools.packages.find]

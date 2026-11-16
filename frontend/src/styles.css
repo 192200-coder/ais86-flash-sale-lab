@@ -1962,3 +1962,202 @@ svg {
     animation: none;
   }
 }
+
+/* --- Semana 12: cuenta, login y administración ------------------------------------- */
+
+.account-button {
+  gap: 6px;
+}
+
+.account-button.is-signed-in {
+  background: var(--ice);
+  color: var(--ink);
+}
+
+.account-button.is-admin .icon {
+  color: var(--blue);
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-block: 4px 16px;
+}
+
+.auth-tabs .chip-filter {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.auth-form {
+  gap: 12px;
+}
+
+.auth-field .field-hint {
+  margin-bottom: 0;
+}
+
+.buyer-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-block: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--ice);
+}
+
+.buyer-avatar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.buyer-copy {
+  min-width: 0;
+}
+
+.buyer-copy p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.buyer-label {
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.buyer-name {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.buyer-email {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+.account-card {
+  margin-top: 0;
+}
+
+.role-chip {
+  margin-top: 6px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-soft);
+}
+
+.role-chip .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.role-admin {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue-dark);
+}
+
+.signin-cta .button {
+  margin-top: 12px;
+}
+
+.receipt-customer {
+  overflow-wrap: anywhere;
+}
+
+.order-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.order-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.order-row-main {
+  min-width: 0;
+}
+
+.order-row-main p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-row-title {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.order-row-muted {
+  color: var(--ink-muted);
+}
+
+.order-row-meta {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.order-row-meta.is-failed {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.order-row-side {
+  display: grid;
+  flex: 0 0 auto;
+  align-content: start;
+  justify-items: end;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.button-small {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: 0.84rem;
+}
+
+@media (max-width: 520px) {
+  .order-row {
+    flex-direction: column;
+  }
+
+  .order-row-side {
+    justify-items: start;
+  }
+}
+
+@media (max-width: 420px) {
+  .account-button .account-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}

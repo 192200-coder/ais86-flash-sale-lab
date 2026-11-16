@@ -8,6 +8,8 @@ x-app: &app
     LAB_KEY: ${LAB_KEY:-}
     BILLING_BASE_URL: ${BILLING_BASE_URL:-}
     BILLING_TOKEN: ${BILLING_TOKEN:-}
+    SUPABASE_URL: ${SUPABASE_URL:-}
+    SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
   init: true
   restart: unless-stopped
   cap_drop: [ALL]

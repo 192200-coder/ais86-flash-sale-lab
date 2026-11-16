@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     billing_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
     billing_max_attempts: int = Field(default=3, ge=1, le=3)
 
+    # Semana 12: autenticación con Supabase Auth. La clave publishable es pública por diseño
+    # (la usan los navegadores); los JWT se verifican con la clave pública del proyecto (JWKS).
+    supabase_url: str = ""
+    supabase_publishable_key: SecretStr = SecretStr("")
+    auth_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
+    auth_jwks_ttl_seconds: int = Field(default=600, ge=30, le=86400)
+    rate_limit_auth_per_minute: int = Field(default=30, ge=1, le=100000)
+
     @field_validator("database_url")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
@@ -97,6 +105,19 @@ class Settings(BaseSettings):
         url = self.billing_base_url.strip().rstrip("/")
         local = url.startswith(("http://127.0.0.1", "http://localhost", "http://host.docker.internal"))
         return bool(self.billing_token_value()) and (url.startswith("https://") or local) and url.endswith("/billing")
+
+    def supabase_base_url(self) -> str:
+        return self.supabase_url.strip().rstrip("/")
+
+    def supabase_key_value(self) -> str:
+        return self.supabase_publishable_key.get_secret_value().strip()
+
+    def auth_configured(self) -> bool:
+        url = self.supabase_base_url()
+        return url.startswith("https://") and bool(self.supabase_key_value())
+
+    def auth_issuer(self) -> str:
+        return self.supabase_base_url() + "/auth/v1"
 
 
 @lru_cache(maxsize=1)

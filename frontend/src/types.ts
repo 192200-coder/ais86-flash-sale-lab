@@ -46,6 +46,43 @@ export interface Billing {
   invoice_number: string | null;
 }
 
+/** Semana 12: sesión de Supabase Auth (a través de la API de S09). */
+export type Role = 'admin' | 'cliente';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: Role;
+}
+
+export interface Session {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  user: AuthUser;
+}
+
+export interface Customer {
+  email: string;
+  full_name: string;
+}
+
+export interface OrderSummary {
+  id: string;
+  created_at: string;
+  total_cents: number;
+  notification_status: NotificationStatus;
+  items: Array<{ name: string; quantity: number }>;
+  customer: Customer | null;
+  billing: {
+    status: BillingStatus;
+    invoice_number: string | null;
+    error: string | null;
+    attempts: number;
+  } | null;
+}
+
 export interface CartLine {
   productId: string;
   quantity: number;

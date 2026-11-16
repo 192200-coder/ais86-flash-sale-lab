@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .accounts import OrderCustomer
+from .auth import CurrentUser, optional_user
 from .billing import PENDING, OrderBilling
 from .db import CAMPAIGN, utcnow
 from .events import build_order_created_event, iso8601
@@ -48,6 +50,7 @@ async def _create_or_replay(
     idempotency_key: str,
     request_hash: str,
     payload: OrderCreate,
+    user: CurrentUser | None = None,
 ) -> dict[str, Any]:
     lock_key = _advisory_lock_key(dataset_id, idempotency_key)
     async with session.begin():
@@ -66,6 +69,15 @@ async def _create_or_replay(
         ).scalar_one_or_none()
         if existing is not None:
             if existing.request_hash != request_hash:
+                raise ApiError(
+                    409,
+                    "IDEMPOTENCY_CONFLICT",
+                    "Idempotency key was already used with a different request",
+                )
+            # Semana 12: el reintento debe venir de la misma persona que creó el pedido.
+            owner = await session.get(OrderCustomer, existing.id)
+            owner_id = owner.user_id if owner else None
+            if owner_id != (user.id if user else None):
                 raise ApiError(
                     409,
                     "IDEMPOTENCY_CONFLICT",
@@ -192,6 +204,18 @@ async def _create_or_replay(
                 updated_at=created_at,
             )
         )
+        # Semana 12: datos de la persona autenticada (del JWT verificado), misma transacción.
+        if user is not None:
+            session.add(
+                OrderCustomer(
+                    order_id=order_id,
+                    dataset_id=dataset_id,
+                    user_id=user.id,
+                    email=user.email,
+                    full_name=user.full_name,
+                    created_at=created_at,
+                )
+            )
         await session.flush()
         return snapshot
 
@@ -238,7 +262,13 @@ async def create_order(
     session: AsyncSession = Depends(get_session),
     context: DatasetContext = Depends(dataset_context),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: CurrentUser | None = Depends(optional_user),
 ) -> JSONResponse:
+    # Semana 12: en la tienda pública comprar exige sesión. Los datasets de laboratorio
+    # (X-Lab-Run, que ya exige X-Lab-Key) conservan el contrato de S09 sin cambios.
+    if context.run_id is None and user is None:
+        raise ApiError(401, "AUTH_REQUIRED", "Sign in required to place an order",
+                       headers={"WWW-Authenticate": "Bearer"})
     key = validate_idempotency_key(idempotency_key)
     request_hash = _canonical_request_hash(payload)
     snapshot = await _create_or_replay(
@@ -247,6 +277,7 @@ async def create_order(
         key,
         request_hash,
         payload,
+        user,
     )
     # Tarea C: se responde al confirmar el pedido; el retraso de la notificación
     # lo aplica solo el worker, nunca la respuesta HTTP.

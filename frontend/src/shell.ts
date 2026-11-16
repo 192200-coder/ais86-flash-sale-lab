@@ -17,6 +17,8 @@ export interface Elements {
   cartButton: HTMLButtonElement;
   cartCount: HTMLElement;
   trackButton: HTMLButtonElement;
+  accountButton: HTMLButtonElement;
+  accountLabel: HTMLElement;
   panel: HTMLDialogElement;
   panelTitle: HTMLElement;
   panelClose: HTMLButtonElement;
@@ -61,6 +63,15 @@ export function buildShell(): Elements {
     'Seguimiento'
   );
 
+  // Semana 12: acceso a la cuenta (Supabase Auth).
+  const accountLabel = el('span', { class: 'account-label' }, 'Iniciar sesión');
+  const accountButton = el('button', {
+    type: 'button',
+    class: 'nav-link account-button',
+    'aria-haspopup': 'dialog'
+  });
+  accountButton.append(icon('user'), accountLabel);
+
   const header = el(
     'header',
     { class: 'site-header' },
@@ -78,6 +89,7 @@ export function buildShell(): Elements {
         { class: 'primary-nav', 'aria-label': 'Principal' },
         el('a', { class: 'nav-link', href: '#catalogo' }, 'Tienda'),
         trackButton,
+        accountButton,
         cartButton
       )
     )
@@ -276,6 +288,8 @@ export function buildShell(): Elements {
     cartButton,
     cartCount,
     trackButton,
+    accountButton,
+    accountLabel,
     panel,
     panelTitle,
     panelClose,

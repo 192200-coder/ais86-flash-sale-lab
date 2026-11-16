@@ -7,9 +7,20 @@ import {
   validateCart
 } from './cart';
 import { el, icon } from './dom';
+import type { IconName } from './dom';
 import { formatDateTime, formatMoney } from './format';
 import { productImage } from './shell';
-import type { Billing, CartLine, Catalog, NotificationStatus, Order, Product } from './types';
+import type {
+  Billing,
+  CartLine,
+  Catalog,
+  Customer,
+  NotificationStatus,
+  Order,
+  OrderSummary,
+  Product,
+  Session
+} from './types';
 
 export type CatalogState = 'loading' | 'ready' | 'error';
 export type PollState = 'idle' | 'polling' | 'timeout' | 'error';
@@ -22,6 +33,7 @@ export interface CartPanelContext {
   orderError: string;
   orderErrorCode: string;
   creating: boolean;
+  session: Session | null;
 }
 
 export function applyStockChip(chip: HTMLElement, product: Product): void {
@@ -190,7 +202,7 @@ export function emptyCatalogNode(
 function actionButton(
   action: string,
   label: string,
-  iconName: 'close' | 'refresh' | 'arrow' | 'cart' | 'search',
+  iconName: IconName,
   className = 'button button-secondary'
 ): HTMLButtonElement {
   const button = el('button', { type: 'button', class: className, 'data-action': action });
@@ -317,9 +329,49 @@ export function cartPanelNodes(context: CartPanelContext): Node[] {
     );
   }
 
-  summary.append(notes, confirmButton);
+  // Semana 12: comprar exige sesión; el pedido queda asociado a la persona autenticada.
+  if (context.session) {
+    summary.append(notes, buyerNode(context.session), confirmButton);
+  } else {
+    summary.append(notes, signInToBuyNode());
+  }
 
   return [list, summary];
+}
+
+function buyerNode(session: Session): HTMLElement {
+  return el(
+    'div',
+    { class: 'buyer-card' },
+    el('span', { class: 'buyer-avatar', 'aria-hidden': 'true' }, initials(session.user.full_name)),
+    el(
+      'div',
+      { class: 'buyer-copy' },
+      el('p', { class: 'buyer-label' }, 'Comprando como'),
+      el('p', { class: 'buyer-name' }, session.user.full_name),
+      el('p', { class: 'buyer-email' }, session.user.email)
+    )
+  );
+}
+
+function signInToBuyNode(): HTMLElement {
+  const wrapper = el('div', { class: 'notice notice-pending signin-cta', role: 'status' });
+  wrapper.append(
+    el('p', { class: 'notice-title' }, 'Inicia sesión para comprar'),
+    el(
+      'p',
+      { class: 'notice-text' },
+      'El pedido se registra a tu nombre. Tu carrito se conserva mientras inicias sesión o creas una cuenta.'
+    ),
+    actionButton('open-auth', 'Iniciar sesión o crear cuenta', 'user', 'button button-primary button-full')
+  );
+  return wrapper;
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const letters = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : (parts[0] ?? '?').slice(0, 2);
+  return letters.toUpperCase();
 }
 
 function isNetworkRetry(code: string): boolean {
@@ -579,6 +631,7 @@ export function receiptPanelNodes(
     idBlock,
     notification,
     billingNode(null),
+    customerNode(undefined),
     el('h3', { class: 'section-label' }, 'Productos'),
     items,
     total,
@@ -740,5 +793,259 @@ export function trackPanelNodes(
     el('h3', { class: 'section-label' }, 'Consultar un pedido'),
     el('p', { class: 'panel-intro' }, 'El seguimiento consulta el estado real guardado en el servidor.'),
     form
+  ];
+}
+
+// --- Semana 12: comprador, autenticación, cuenta y administración ----------------------
+
+/** `undefined` = consultando; `null` = no visible para quien consulta (no es su pedido). */
+export function customerNode(customer: Customer | null | undefined): HTMLElement {
+  let text = 'Comprador: consultando…';
+  if (customer === null) {
+    text = 'Comprador: visible solo para el titular del pedido y el administrador.';
+  } else if (customer) {
+    text = `Comprador: ${customer.full_name} · ${customer.email}`;
+  }
+  return el('p', { class: 'receipt-note receipt-customer', role: 'status', 'data-receipt-customer': '' }, text);
+}
+
+export type AuthTab = 'login' | 'signup';
+
+export interface AuthPanelContext {
+  tab: AuthTab;
+  busy: boolean;
+  error: string;
+  notice: string;
+  email: string;
+  fullName: string;
+  afterAuthCart: boolean;
+}
+
+function field(
+  id: string,
+  label: string,
+  attrs: Record<string, string | boolean>,
+  value = '',
+  hint = ''
+): HTMLElement {
+  const input = el('input', { id, class: 'field-input', ...attrs });
+  input.value = value;
+  const wrapper = el('div', { class: 'auth-field' }, el('label', { for: id, class: 'field-label' }, label), input);
+  if (hint) {
+    wrapper.append(el('p', { class: 'field-hint' }, hint));
+  }
+  return wrapper;
+}
+
+export function authPanelNodes(context: AuthPanelContext): Node[] {
+  const isLogin = context.tab === 'login';
+  const tabs = el('div', { class: 'auth-tabs', role: 'group', 'aria-label': 'Tipo de acceso' });
+  for (const [tab, label] of [['login', 'Iniciar sesión'], ['signup', 'Crear cuenta']] as const) {
+    const active = context.tab === tab;
+    const button = el(
+      'button',
+      { type: 'button', class: 'chip chip-filter', 'data-action': 'auth-tab', 'data-tab': tab, 'aria-pressed': active ? 'true' : 'false' },
+      label
+    );
+    button.classList.toggle('is-active', active);
+    button.disabled = context.busy;
+    tabs.append(button);
+  }
+
+  const form = el('form', { class: 'track-form auth-form', 'data-auth-form': context.tab, novalidate: true });
+  if (!isLogin) {
+    form.append(
+      field('auth-name', 'Nombre completo', { type: 'text', name: 'full_name', autocomplete: 'name', maxlength: '80', required: true }, context.fullName)
+    );
+  }
+  form.append(
+    field('auth-email', 'Correo electrónico', { type: 'email', name: 'email', autocomplete: 'email', maxlength: '254', required: true, spellcheck: 'false' }, context.email),
+    field(
+      'auth-password',
+      'Contraseña',
+      { type: 'password', name: 'password', autocomplete: isLogin ? 'current-password' : 'new-password', maxlength: '72', required: true },
+      '',
+      isLogin ? '' : 'Mínimo 8 caracteres.'
+    )
+  );
+  const errorBox = el('p', { class: 'field-error', role: 'alert', tabindex: '-1', 'data-auth-error': '', hidden: context.error.length === 0 });
+  errorBox.textContent = context.error;
+  const submit = el('button', { type: 'submit', class: 'button button-primary button-full', 'data-auth-submit': '' });
+  submit.disabled = context.busy;
+  submit.append(
+    icon(isLogin ? 'user' : 'check'),
+    el('span', { 'data-auth-submit-label': '' }, context.busy ? 'Procesando…' : isLogin ? 'Iniciar sesión' : 'Crear cuenta')
+  );
+  form.append(errorBox, submit);
+  if (context.busy) {
+    form.setAttribute('aria-busy', 'true');
+  }
+
+  const nodes: Node[] = [
+    el(
+      'p',
+      { class: 'panel-intro' },
+      context.afterAuthCart
+        ? 'Inicia sesión para confirmar tu pedido. Tu carrito se conserva.'
+        : 'Accede para comprar y ver tus pedidos. Cuentas de demostración: no uses datos reales.'
+    ),
+    tabs
+  ];
+  if (context.notice) {
+    nodes.push(el('div', { class: 'notice notice-sent', role: 'status' }, el('p', { class: 'notice-text' }, context.notice)));
+  }
+  nodes.push(form);
+  if (!isLogin) {
+    nodes.push(el('p', { class: 'receipt-note' }, 'Las cuentas nuevas tienen rol cliente. El rol de administrador solo lo asigna un administrador en Supabase.'));
+  }
+  return nodes;
+}
+
+export type ListState = 'loading' | 'ready' | 'error';
+
+export interface AccountPanelContext {
+  session: Session;
+  state: ListState;
+  orders: readonly OrderSummary[];
+  error: string;
+}
+
+function roleChip(role: 'admin' | 'cliente'): HTMLElement {
+  const chip = el('span', { class: `chip role-chip role-${role}` });
+  if (role === 'admin') {
+    chip.append(icon('shield'));
+  }
+  chip.append(el('span', {}, role === 'admin' ? 'Administrador' : 'Cliente'));
+  return chip;
+}
+
+function billingLabel(summary: OrderSummary): string {
+  const billing = summary.billing;
+  if (!billing) {
+    return 'Sin facturación';
+  }
+  if (billing.status === 'issued' && billing.invoice_number) {
+    return billing.invoice_number;
+  }
+  if (billing.status === 'failed') {
+    return `Facturación fallida${billing.error ? ` (${billing.error})` : ''}`;
+  }
+  return 'Facturación pendiente';
+}
+
+function itemsLabel(summary: OrderSummary): string {
+  return summary.items.map((item) => `${item.quantity} × ${item.name}`).join(', ');
+}
+
+function listStatusNode(state: ListState, error: string, empty: string, count: number): HTMLElement | null {
+  if (state === 'loading') {
+    return el('p', { class: 'notice-meta', role: 'status' }, el('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Cargando pedidos…');
+  }
+  if (state === 'error') {
+    return el('div', { class: 'alert alert-error', role: 'alert' }, icon('alert'), el('div', { class: 'alert-body' }, el('p', {}, error)));
+  }
+  if (count === 0) {
+    return el('p', { class: 'panel-intro' }, empty);
+  }
+  return null;
+}
+
+export function accountPanelNodes(context: AccountPanelContext): Node[] {
+  const { user } = context.session;
+  const profile = el(
+    'div',
+    { class: 'buyer-card account-card' },
+    el('span', { class: 'buyer-avatar', 'aria-hidden': 'true' }, initials(user.full_name)),
+    el(
+      'div',
+      { class: 'buyer-copy' },
+      el('p', { class: 'buyer-name' }, user.full_name),
+      el('p', { class: 'buyer-email' }, user.email),
+      roleChip(user.role)
+    )
+  );
+  const actions = el('div', { class: 'receipt-actions' });
+  if (user.role === 'admin') {
+    actions.append(actionButton('open-admin', 'Panel de administración', 'shield', 'button button-primary'));
+  }
+  actions.append(actionButton('logout', 'Cerrar sesión', 'logout'));
+
+  const list = el('ul', { class: 'order-list' });
+  for (const order of context.orders) {
+    list.append(
+      el(
+        'li',
+        { class: 'order-row' },
+        el(
+          'div',
+          { class: 'order-row-main' },
+          el('p', { class: 'order-row-title' }, formatDateTime(order.created_at)),
+          el('p', { class: 'order-row-meta' }, itemsLabel(order)),
+          el('p', { class: 'order-row-meta' }, billingLabel(order))
+        ),
+        el(
+          'div',
+          { class: 'order-row-side' },
+          el('strong', {}, formatMoney(order.total_cents)),
+          el('button', { type: 'button', class: 'button button-secondary button-small', 'data-action': 'view-order', 'data-order-id': order.id }, 'Ver recibo')
+        )
+      )
+    );
+  }
+  const status = listStatusNode(context.state, context.error, 'Todavía no tienes pedidos. ¡Explora el drop!', context.orders.length);
+  return [
+    profile,
+    actions,
+    el('h3', { class: 'section-label' }, 'Mis pedidos'),
+    status ?? list
+  ];
+}
+
+export interface AdminPanelContext {
+  state: ListState;
+  orders: readonly OrderSummary[];
+  error: string;
+  busyOrderId: string | null;
+}
+
+export function adminPanelNodes(context: AdminPanelContext): Node[] {
+  const list = el('ul', { class: 'order-list' });
+  for (const order of context.orders) {
+    const buyer = order.customer
+      ? el('p', { class: 'order-row-title' }, `${order.customer.full_name} · ${order.customer.email}`)
+      : el('p', { class: 'order-row-title order-row-muted' }, 'Sin cuenta (pedido anterior al login)');
+    const side = el('div', { class: 'order-row-side' }, el('strong', {}, formatMoney(order.total_cents)));
+    if (order.billing?.status === 'failed') {
+      const retry = el('button', {
+        type: 'button',
+        class: 'button button-secondary button-small',
+        'data-action': 'retry-billing',
+        'data-order-id': order.id
+      });
+      retry.disabled = context.busyOrderId !== null;
+      retry.append(icon('refresh'), el('span', {}, context.busyOrderId === order.id ? 'Reintentando…' : 'Reintentar facturación'));
+      side.append(retry);
+    }
+    const billingClass = order.billing?.status === 'failed' ? 'order-row-meta is-failed' : 'order-row-meta';
+    list.append(
+      el(
+        'li',
+        { class: 'order-row' },
+        el(
+          'div',
+          { class: 'order-row-main' },
+          buyer,
+          el('p', { class: 'order-row-meta' }, `${formatDateTime(order.created_at)} · ${itemsLabel(order)}`),
+          el('p', { class: billingClass }, `${billingLabel(order)} · notificación ${order.notification_status}`)
+        ),
+        side
+      )
+    );
+  }
+  const status = listStatusNode(context.state, context.error, 'Aún no hay pedidos en la tienda.', context.orders.length);
+  return [
+    el('p', { class: 'panel-intro' }, 'Solo administradores: todos los pedidos de la tienda con su comprador y el estado de facturación.'),
+    el('div', { class: 'receipt-actions' }, actionButton('admin-refresh', 'Actualizar', 'refresh'), actionButton('open-account', 'Volver a mi cuenta', 'user')),
+    status ?? list
   ];
 }

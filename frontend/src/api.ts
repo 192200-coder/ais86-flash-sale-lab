@@ -1,14 +1,27 @@
 import type {
+  AuthUser,
   Billing,
+  BillingStatus,
   Catalog,
   Campaign,
+  Customer,
   NotificationStatus,
   Order,
   OrderLine,
-  Product
+  OrderSummary,
+  Product,
+  Session
 } from './types';
 
 const defaultTimeoutMs = 12000;
+
+/** Semana 12: session.ts registra aquí cómo obtener un access token vigente. */
+type TokenProvider = () => Promise<string | null>;
+let tokenProvider: TokenProvider = async () => null;
+
+export function setTokenProvider(provider: TokenProvider): void {
+  tokenProvider = provider;
+}
 
 export class ApiError extends Error {
   readonly code: string;
@@ -30,6 +43,12 @@ interface RequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Envía `Authorization: Bearer <token>` si hay sesión. */
+  auth?: boolean;
+  /** Acepta respuestas sin cuerpo (204). */
+  allowEmpty?: boolean;
+  /** Token explícito (logout). */
+  bearer?: string;
 }
 
 interface RawResponse {
@@ -190,6 +209,10 @@ async function request(path: string, options: RequestOptions = {}): Promise<RawR
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
+    const token = options.bearer ?? (options.auth ? await tokenProvider() : null);
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
     const response = await fetch(path, {
       method: options.method ?? 'GET',
@@ -228,7 +251,7 @@ async function request(path: string, options: RequestOptions = {}): Promise<RawR
       );
     }
 
-    if (text.length === 0) {
+    if (text.length === 0 && !options.allowEmpty) {
       throw new ApiError('RESPONSE_INVALID', response.status, 'La respuesta del servidor está vacía.');
     }
 
@@ -271,7 +294,8 @@ export async function createOrder(
     method: 'POST',
     body: { items },
     headers: { 'Idempotency-Key': idempotencyKey },
-    signal
+    signal,
+    auth: true
   });
   if (response.status !== 201) {
     throw new ApiError(
@@ -300,6 +324,173 @@ export async function fetchBilling(id: string, signal?: AbortSignal): Promise<Bi
   return { status, invoice_number: number };
 }
 
+// --- Semana 12: autenticación, cuenta y administración ---------------------------------
+
+function parseUser(value: unknown): AuthUser {
+  if (!isRecord(value)) {
+    throw invalidResponse();
+  }
+  const role = value.role === 'admin' ? 'admin' : 'cliente';
+  return {
+    id: readString(value, 'id'),
+    email: readString(value, 'email'),
+    full_name: readString(value, 'full_name'),
+    role
+  };
+}
+
+function parseSession(value: unknown): Session {
+  if (!isRecord(value)) {
+    throw invalidResponse();
+  }
+  const expiresIn = readInteger(value, 'expires_in', 1);
+  return {
+    accessToken: readString(value, 'access_token'),
+    refreshToken: readString(value, 'refresh_token'),
+    expiresAt: Date.now() + expiresIn * 1000,
+    user: parseUser(value.user)
+  };
+}
+
+function isBillingStatus(value: unknown): value is BillingStatus {
+  return value === 'pending' || value === 'issued' || value === 'failed';
+}
+
+function parseCustomer(value: unknown): Customer | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return { email: readString(value, 'email'), full_name: readString(value, 'full_name') };
+}
+
+function parseSummary(value: unknown): OrderSummary {
+  if (!isRecord(value) || !Array.isArray(value.items) || !isNotificationStatus(value.notification_status)) {
+    throw invalidResponse();
+  }
+  const billing = isRecord(value.billing) && isBillingStatus(value.billing.status)
+    ? {
+        status: value.billing.status,
+        invoice_number: typeof value.billing.invoice_number === 'string' ? value.billing.invoice_number : null,
+        error: typeof value.billing.error === 'string' ? value.billing.error : null,
+        attempts: isInteger(value.billing.attempts) ? value.billing.attempts : 0
+      }
+    : null;
+  return {
+    id: readString(value, 'id'),
+    created_at: readString(value, 'created_at'),
+    total_cents: readInteger(value, 'total_cents', 0),
+    notification_status: value.notification_status,
+    items: value.items.filter(isRecord).map((item) => ({
+      name: typeof item.name === 'string' ? item.name : 'Producto',
+      quantity: isInteger(item.quantity) ? item.quantity : 1
+    })),
+    customer: parseCustomer(value.customer),
+    billing
+  };
+}
+
+function parseSummaries(value: unknown): OrderSummary[] {
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    throw invalidResponse();
+  }
+  return value.items.map(parseSummary);
+}
+
+export async function loginRequest(email: string, password: string): Promise<Session> {
+  const response = await request('/api/v1/auth/login', { method: 'POST', body: { email, password } });
+  return parseSession(response.payload);
+}
+
+/** Devuelve la sesión, o `null` si Supabase pide confirmar el correo antes de iniciar sesión. */
+export async function signupRequest(fullName: string, email: string, password: string): Promise<Session | null> {
+  const response = await request('/api/v1/auth/signup', {
+    method: 'POST',
+    body: { full_name: fullName, email, password }
+  });
+  if (response.status === 202) {
+    return null;
+  }
+  return parseSession(response.payload);
+}
+
+export async function refreshRequest(refreshToken: string): Promise<Session> {
+  const response = await request('/api/v1/auth/refresh', {
+    method: 'POST',
+    body: { refresh_token: refreshToken }
+  });
+  return parseSession(response.payload);
+}
+
+export async function logoutRequest(accessToken: string): Promise<void> {
+  await request('/api/v1/auth/logout', { method: 'POST', bearer: accessToken, allowEmpty: true });
+}
+
+export async function fetchMyOrders(signal?: AbortSignal): Promise<OrderSummary[]> {
+  const response = await request('/api/v1/me/orders', { signal, auth: true });
+  return parseSummaries(response.payload);
+}
+
+export async function fetchAdminOrders(signal?: AbortSignal): Promise<OrderSummary[]> {
+  const response = await request('/api/v1/admin/orders', { signal, auth: true });
+  return parseSummaries(response.payload);
+}
+
+export async function retryBillingRequest(orderId: string): Promise<void> {
+  await request(`/api/v1/admin/orders/${encodeURIComponent(orderId)}/billing/retry`, {
+    method: 'POST',
+    auth: true
+  });
+}
+
+export async function fetchCustomer(orderId: string, signal?: AbortSignal): Promise<Customer> {
+  const response = await request(`/api/v1/orders/${encodeURIComponent(orderId)}/customer`, {
+    signal,
+    auth: true
+  });
+  const customer = parseCustomer(response.payload);
+  if (!customer) {
+    throw invalidResponse();
+  }
+  return customer;
+}
+
+export function isAuthError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.code === 'AUTH_REQUIRED' || error.code === 'INVALID_TOKEN' || error.code === 'SESSION_EXPIRED')
+  );
+}
+
+export function authErrorMessage(error: unknown, mode: 'login' | 'signup'): string {
+  const code = error instanceof ApiError ? error.code : 'UNKNOWN';
+  switch (code) {
+    case 'INVALID_CREDENTIALS':
+      return 'Correo o contraseña incorrectos.';
+    case 'EMAIL_NOT_CONFIRMED':
+      return 'Confirma tu correo antes de iniciar sesión (revisa tu bandeja de entrada).';
+    case 'USER_EXISTS':
+      return 'Ya existe una cuenta con ese correo. Inicia sesión.';
+    case 'WEAK_PASSWORD':
+      return 'La contraseña es muy débil. Usa al menos 8 caracteres combinando letras y números.';
+    case 'VALIDATION_ERROR':
+      return mode === 'signup'
+        ? 'Revisa los datos: nombre (2 a 80 caracteres), un correo válido y una contraseña de 8 a 72 caracteres.'
+        : 'Revisa el correo y la contraseña.';
+    case 'SIGNUP_DISABLED':
+      return 'El registro está desactivado. Pide una cuenta al administrador.';
+    case 'RATE_LIMITED':
+      return 'Demasiados intentos. Espera un minuto y vuelve a intentarlo.';
+    case 'AUTH_NOT_CONFIGURED':
+      return 'El inicio de sesión no está configurado en el servidor (faltan SUPABASE_URL y SUPABASE_PUBLISHABLE_KEY).';
+    case 'AUTH_UNAVAILABLE':
+    case 'NETWORK_ERROR':
+    case 'NETWORK_TIMEOUT':
+      return 'No pudimos contactar el servicio de autenticación. Inténtalo de nuevo.';
+    default:
+      return 'No pudimos completar la operación. Inténtalo de nuevo.';
+  }
+}
+
 export function friendlyError(error: unknown, context: 'catalog' | 'create' | 'order'): FriendlyError {
   const code = error instanceof ApiError ? error.code : 'UNKNOWN';
 
@@ -323,6 +514,12 @@ export function friendlyError(error: unknown, context: 'catalog' | 'create' | 'o
   }
 
   if (context === 'create') {
+    if (code === 'AUTH_REQUIRED' || code === 'INVALID_TOKEN' || code === 'SESSION_EXPIRED') {
+      return {
+        code,
+        message: 'Tu sesión no es válida o expiró. Inicia sesión de nuevo para confirmar el pedido; tu carrito sigue intacto.'
+      };
+    }
     if (code === 'OUT_OF_STOCK') {
       return {
         code,

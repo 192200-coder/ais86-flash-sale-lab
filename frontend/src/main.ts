@@ -1,6 +1,21 @@
 import '@fontsource-variable/manrope';
 import './styles.css';
-import { ApiError, createOrder, fetchBilling, fetchCatalog, fetchOrder, friendlyError, isAbortError } from './api';
+import {
+  ApiError,
+  authErrorMessage,
+  createOrder,
+  fetchAdminOrders,
+  fetchBilling,
+  fetchCatalog,
+  fetchCustomer,
+  fetchMyOrders,
+  fetchOrder,
+  friendlyError,
+  isAbortError,
+  isAuthError,
+  retryBillingRequest
+} from './api';
+import { currentSession, expireSession, onSessionChange, signIn, signOut, signUp } from './session';
 import {
   MAX_DISTINCT_PRODUCTS,
   addLine,
@@ -26,11 +41,15 @@ import {
   writeStoredCart
 } from './storage';
 import type { AttemptRecord } from './storage';
-import type { CartLine, Catalog, Order, Product } from './types';
+import type { CartLine, Catalog, Order, OrderSummary, Product } from './types';
 import {
+  accountPanelNodes,
+  adminPanelNodes,
   applyStockChip,
+  authPanelNodes,
   cartPanelNodes,
   configureAddButton,
+  customerNode,
   emptyCatalogNode,
   notificationNode,
   billingNode,
@@ -40,9 +59,9 @@ import {
   syncProductCard,
   trackPanelNodes
 } from './view';
-import type { CatalogState, PollState } from './view';
+import type { AuthTab, CatalogState, ListState, PollState } from './view';
 
-type PanelMode = 'cart' | 'receipt' | 'track';
+type PanelMode = 'cart' | 'receipt' | 'track' | 'auth' | 'account' | 'admin';
 type ToastTone = 'info' | 'warn';
 
 const pollIntervalMs = 2000;
@@ -76,6 +95,23 @@ let billingToken = 0;
 let billingTimer: number | null = null;
 let lastFocused: HTMLElement | null = null;
 let toastTimer: number | null = null;
+// Semana 12: estado de autenticación, cuenta y administración.
+let authTab: AuthTab = 'login';
+let authBusy = false;
+let authError = '';
+let authNotice = '';
+let authEmail = '';
+let authFullName = '';
+let afterAuthCart = false;
+let accountState: ListState = 'loading';
+let accountOrders: OrderSummary[] = [];
+let accountError = '';
+let adminState: ListState = 'loading';
+let adminOrders: OrderSummary[] = [];
+let adminError = '';
+let adminBusyId: string | null = null;
+let listToken = 0;
+let customerToken = 0;
 
 const ui: Elements = buildShell();
 
@@ -91,6 +127,12 @@ function start(): void {
   });
   ui.cartButton.addEventListener('click', () => openPanel('cart'));
   ui.trackButton.addEventListener('click', () => openPanel('track'));
+  ui.accountButton.addEventListener('click', () => {
+    afterAuthCart = false;
+    openPanel(currentSession() ? 'account' : 'auth');
+  });
+  onSessionChange(onSessionChanged);
+  updateAccountButton();
   ui.panelClose.addEventListener('click', () => ui.panel.close());
   ui.panel.addEventListener('cancel', onPanelCancel);
   ui.panel.addEventListener('close', onPanelClose);
@@ -564,11 +606,38 @@ function openPanel(mode: PanelMode): void {
     trackingBusy = false;
     trackingValue = '';
   }
-  panelMode = mode;
+  panelMode = resolveMode(mode);
   renderPanel(true);
   ui.panel.showModal();
   document.documentElement.classList.add('has-dialog');
-  focusPanelStart(mode);
+  focusPanelStart(panelMode);
+}
+
+/** Semana 12: prepara los paneles de cuenta; sin permiso redirige (la API también lo impide). */
+function resolveMode(mode: PanelMode): PanelMode {
+  const session = currentSession();
+  if (mode === 'admin' && session?.user.role !== 'admin') {
+    mode = session ? 'account' : 'auth';
+  }
+  if (mode === 'account' && !session) {
+    mode = 'auth';
+  }
+  if (mode === 'auth') {
+    authBusy = false;
+    authError = '';
+  } else {
+    authNotice = '';
+  }
+  if (mode === 'account') {
+    accountState = 'loading';
+    void loadAccountOrders();
+  }
+  if (mode === 'admin') {
+    adminState = 'loading';
+    adminBusyId = null;
+    void loadAdminOrders();
+  }
+  return mode;
 }
 
 function setPanelMode(mode: PanelMode): void {
@@ -583,13 +652,20 @@ function setPanelMode(mode: PanelMode): void {
     trackingBusy = false;
     trackingValue = '';
   }
-  panelMode = mode;
+  panelMode = resolveMode(mode);
   renderPanel(true);
-  focusPanelStart(mode);
+  focusPanelStart(panelMode);
 }
 
 function focusPanelStart(mode: PanelMode): void {
   window.requestAnimationFrame(() => {
+    if (mode === 'auth') {
+      const input = ui.panelBody.querySelector<HTMLInputElement>('#auth-name, #auth-email');
+      if (input) {
+        input.focus();
+        return;
+      }
+    }
     if (mode === 'track') {
       const input = ui.panelBody.querySelector<HTMLInputElement>('#order-lookup');
       if (input) {
@@ -633,10 +709,24 @@ function onPanelInput(event: Event): void {
       clearTrackError();
     }
   }
+  if (target instanceof HTMLInputElement && target.id === 'auth-email') {
+    authEmail = target.value;
+  }
+  if (target instanceof HTMLInputElement && target.id === 'auth-name') {
+    authFullName = target.value;
+  }
 }
 
 function onPanelSubmit(event: SubmitEvent): void {
-  if (!(event.target instanceof HTMLFormElement) || !event.target.matches('[data-lookup-form]')) {
+  if (!(event.target instanceof HTMLFormElement)) {
+    return;
+  }
+  if (event.target.matches('[data-auth-form]')) {
+    event.preventDefault();
+    void submitAuth(event.target);
+    return;
+  }
+  if (!event.target.matches('[data-lookup-form]')) {
     return;
   }
   event.preventDefault();
@@ -690,6 +780,41 @@ function onPanelBodyClick(event: MouseEvent): void {
     case 'open-track':
       setPanelMode('track');
       break;
+    case 'open-auth':
+      afterAuthCart = panelMode === 'cart';
+      setPanelMode('auth');
+      break;
+    case 'auth-tab':
+      if (!authBusy && (button.dataset.tab === 'login' || button.dataset.tab === 'signup')) {
+        authTab = button.dataset.tab;
+        authError = '';
+        authNotice = '';
+        renderPanelBody(false);
+        focusPanelStart('auth');
+      }
+      break;
+    case 'logout':
+      void logout();
+      break;
+    case 'open-account':
+      setPanelMode('account');
+      break;
+    case 'open-admin':
+      setPanelMode('admin');
+      break;
+    case 'admin-refresh':
+      setPanelMode('admin');
+      break;
+    case 'retry-billing':
+      if (button.dataset.orderId) {
+        void retryBilling(button.dataset.orderId);
+      }
+      break;
+    case 'view-order':
+      if (button.dataset.orderId) {
+        void openOrderReceipt(button.dataset.orderId);
+      }
+      break;
     case 'browse':
       ui.panel.close();
       window.setTimeout(() => {
@@ -709,12 +834,18 @@ function renderPanel(resetScroll: boolean): void {
   const titles: Record<PanelMode, string> = {
     cart: 'Carrito',
     receipt: 'Pedido confirmado',
-    track: 'Seguimiento'
+    track: 'Seguimiento',
+    auth: authTab === 'login' ? 'Iniciar sesión' : 'Crear cuenta',
+    account: 'Mi cuenta',
+    admin: 'Panel de administración'
   };
   const closeLabels: Record<PanelMode, string> = {
     cart: 'Cerrar carrito',
     receipt: 'Cerrar recibo',
-    track: 'Cerrar seguimiento'
+    track: 'Cerrar seguimiento',
+    auth: 'Cerrar inicio de sesión',
+    account: 'Cerrar mi cuenta',
+    admin: 'Cerrar panel de administración'
   };
   ui.panelTitle.textContent = titles[panelMode];
   ui.panelClose.setAttribute('aria-label', closeLabels[panelMode]);
@@ -738,10 +869,29 @@ function renderPanelBody(resetScroll: boolean): void {
       cart,
       orderError,
       orderErrorCode,
-      creating
+      creating,
+      session: currentSession()
     });
   } else if (panelMode === 'receipt') {
     nodes = receiptPanelNodes(activeOrder, pollState, pollMessage);
+  } else if (panelMode === 'auth') {
+    ui.panelTitle.textContent = authTab === 'login' ? 'Iniciar sesión' : 'Crear cuenta';
+    nodes = authPanelNodes({
+      tab: authTab,
+      busy: authBusy,
+      error: authError,
+      notice: authNotice,
+      email: authEmail,
+      fullName: authFullName,
+      afterAuthCart
+    });
+  } else if (panelMode === 'account') {
+    const session = currentSession();
+    nodes = session
+      ? accountPanelNodes({ session, state: accountState, orders: accountOrders, error: accountError })
+      : [];
+  } else if (panelMode === 'admin') {
+    nodes = adminPanelNodes({ state: adminState, orders: adminOrders, error: adminError, busyOrderId: adminBusyId });
   } else {
     nodes = trackPanelNodes(trackingValue, trackingError, trackingBusy);
   }
@@ -840,6 +990,12 @@ async function confirmOrder(): Promise<void> {
   if (items.length === 0) {
     return;
   }
+  // Semana 12: sin sesión no se puede comprar (la API responde 401 AUTH_REQUIRED).
+  if (!currentSession()) {
+    afterAuthCart = true;
+    setPanelMode('auth');
+    return;
+  }
   const attempt = ensureAttempt(items);
   hideToast();
   creating = true;
@@ -868,6 +1024,21 @@ async function confirmOrder(): Promise<void> {
     const info = friendlyError(error, 'create');
     orderError = info.message;
     orderErrorCode = info.code;
+    if (isAuthError(error)) {
+      // Sesión inválida o expirada: se descarta y se pide iniciar sesión de nuevo.
+      expireSession();
+      clearAttempt();
+      afterAuthCart = true;
+      authNotice = '';
+      authError = orderError;
+      clearOrderError();
+      panelMode = 'auth';
+      authBusy = false;
+      renderPanel(false);
+      syncCardStates();
+      focusPanelStart('auth');
+      return;
+    }
     if (error instanceof ApiError) {
       if (error.code === 'IDEMPOTENCY_CONFLICT' || error.code === 'VALIDATION_ERROR') {
         clearAttempt();
@@ -896,6 +1067,198 @@ function beginReceipt(order: Order): void {
     startPolling();
   }
   startBillingPoll(order.id);
+  void loadReceiptCustomer(order.id);
+}
+
+/** Semana 12: comprador del pedido (solo lo ven su titular y el administrador). */
+async function loadReceiptCustomer(orderId: string): Promise<void> {
+  const token = ++customerToken;
+  const render = (node: HTMLElement): void => {
+    if (token !== customerToken || panelMode !== 'receipt' || activeOrder?.id !== orderId) {
+      return;
+    }
+    ui.panelBody.querySelector('[data-receipt-customer]')?.replaceWith(node);
+  };
+  if (!currentSession()) {
+    render(customerNode(null));
+    return;
+  }
+  try {
+    render(customerNode(await fetchCustomer(orderId)));
+  } catch {
+    render(customerNode(null));
+  }
+}
+
+async function loadAccountOrders(): Promise<void> {
+  const token = ++listToken;
+  try {
+    const orders = await fetchMyOrders();
+    if (token !== listToken) {
+      return;
+    }
+    accountOrders = orders;
+    accountState = 'ready';
+  } catch (error) {
+    if (token !== listToken) {
+      return;
+    }
+    if (isAuthError(error)) {
+      expireSession();
+      return;
+    }
+    accountState = 'error';
+    accountError = 'No pudimos cargar tus pedidos. Inténtalo de nuevo.';
+  }
+  if (ui.panel.open && panelMode === 'account') {
+    renderPanelBody(false);
+  }
+}
+
+async function loadAdminOrders(): Promise<void> {
+  const token = ++listToken;
+  try {
+    const orders = await fetchAdminOrders();
+    if (token !== listToken) {
+      return;
+    }
+    adminOrders = orders;
+    adminState = 'ready';
+  } catch (error) {
+    if (token !== listToken) {
+      return;
+    }
+    if (isAuthError(error)) {
+      expireSession();
+      return;
+    }
+    adminState = 'error';
+    adminError =
+      error instanceof ApiError && error.code === 'FORBIDDEN'
+        ? 'Tu cuenta no tiene rol de administrador.'
+        : 'No pudimos cargar los pedidos. Inténtalo de nuevo.';
+  }
+  if (ui.panel.open && panelMode === 'admin') {
+    renderPanelBody(false);
+  }
+}
+
+async function retryBilling(orderId: string): Promise<void> {
+  if (adminBusyId) {
+    return;
+  }
+  adminBusyId = orderId;
+  renderPanelBody(false);
+  try {
+    await retryBillingRequest(orderId);
+    showToast('Facturación reenviada: el worker la emitirá con la misma clave (sin duplicar).');
+  } catch (error) {
+    if (isAuthError(error)) {
+      adminBusyId = null;
+      expireSession();
+      return;
+    }
+    showToast('No se pudo reintentar la facturación.', 'warn');
+  }
+  adminBusyId = null;
+  window.setTimeout(() => {
+    if (ui.panel.open && panelMode === 'admin') {
+      void loadAdminOrders();
+    }
+  }, 3000);
+  void loadAdminOrders();
+}
+
+async function openOrderReceipt(orderId: string): Promise<void> {
+  try {
+    beginReceipt(await fetchOrder(orderId));
+  } catch (error) {
+    showToast(friendlyError(error, 'order').message, 'warn');
+  }
+}
+
+async function submitAuth(form: HTMLFormElement): Promise<void> {
+  if (authBusy) {
+    return;
+  }
+  const data = new FormData(form);
+  const email = String(data.get('email') ?? '').trim();
+  const password = String(data.get('password') ?? '');
+  const fullName = String(data.get('full_name') ?? '').trim();
+  authEmail = email;
+  authFullName = fullName;
+  if (!email || !password || (authTab === 'signup' && fullName.length < 2)) {
+    setAuthError('Completa todos los campos.');
+    return;
+  }
+  if (authTab === 'signup' && password.length < 8) {
+    setAuthError('La contraseña debe tener al menos 8 caracteres.');
+    return;
+  }
+  authBusy = true;
+  authError = '';
+  renderPanelBody(false);
+  try {
+    const session = authTab === 'login' ? await signIn(email, password) : await signUp(fullName, email, password);
+    authBusy = false;
+    if (!session) {
+      authTab = 'login';
+      authNotice = 'Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.';
+      renderPanel(false);
+      focusPanelStart('auth');
+      return;
+    }
+    authFullName = '';
+    showToast(`Hola, ${session.user.full_name}.`);
+    setPanelMode(afterAuthCart ? 'cart' : 'account');
+    afterAuthCart = false;
+  } catch (error) {
+    authBusy = false;
+    renderPanelBody(false);
+    setAuthError(authErrorMessage(error, authTab));
+  }
+}
+
+function setAuthError(message: string): void {
+  authError = message;
+  const box = ui.panelBody.querySelector<HTMLElement>('[data-auth-error]');
+  if (box) {
+    box.textContent = message;
+    box.hidden = false;
+    box.focus();
+  }
+}
+
+async function logout(): Promise<void> {
+  await signOut();
+  showToast('Sesión cerrada.');
+}
+
+function onSessionChanged(): void {
+  updateAccountButton();
+  if (!ui.panel.open) {
+    return;
+  }
+  if (!currentSession() && (panelMode === 'account' || panelMode === 'admin')) {
+    setPanelMode('auth');
+    return;
+  }
+  if (panelMode === 'cart') {
+    renderPanelBody(false);
+  }
+}
+
+function updateAccountButton(): void {
+  const session = currentSession();
+  ui.accountLabel.textContent = session ? session.user.full_name.split(/\s+/)[0] ?? 'Mi cuenta' : 'Iniciar sesión';
+  ui.accountButton.classList.toggle('is-signed-in', session !== null);
+  ui.accountButton.classList.toggle('is-admin', session?.user.role === 'admin');
+  ui.accountButton.setAttribute(
+    'aria-label',
+    session
+      ? `Mi cuenta: ${session.user.full_name}${session.user.role === 'admin' ? ', administrador' : ''}`
+      : 'Iniciar sesión o crear cuenta'
+  );
 }
 
 /** Semana 11: consulta el comprobante aparte; su estado no afecta al pedido ni a la notificación. */

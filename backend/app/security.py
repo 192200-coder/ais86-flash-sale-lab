@@ -194,6 +194,10 @@ class HardeningMiddleware:
             if path == "/api/v1/orders" and method == "POST":
                 limit = self.settings.rate_limit_orders_per_minute
                 bucket = "orders"
+            elif path.startswith("/api/v1/auth/") and method == "POST":
+                # Semana 12: login/registro con límite propio (frena fuerza bruta).
+                limit = self.settings.rate_limit_auth_per_minute
+                bucket = "auth"
             else:
                 limit = self.settings.rate_limit_api_per_minute
                 bucket = "api"

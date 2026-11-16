@@ -41,7 +41,10 @@ const iconPaths = {
   copy: 'M9 9h10v10H9zM5 15V5h10',
   arrow: 'M5 12h14M13 6l6 6-6 6',
   refresh: 'M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5',
-  alert: 'M12 3 2 21h20L12 3Zm0 6v6m0 3h.01'
+  alert: 'M12 3 2 21h20L12 3Zm0 6v6m0 3h.01',
+  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20a7.5 7.5 0 0 1 15 0',
+  logout: 'M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10',
+  shield: 'M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4'
 } as const;
 
 export type IconName = keyof typeof iconPaths;
